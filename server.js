@@ -1,4 +1,3 @@
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Bipolar Early Warning System — Backend Server
 // Handles Oura OAuth, nightly data ingestion, and algorithm computation
