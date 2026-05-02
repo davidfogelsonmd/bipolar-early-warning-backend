@@ -21,7 +21,10 @@ const REDIRECT_URI       = process.env.REDIRECT_URI || 'https://bipolarrelapseea
 const CLINICIAN_PASSWORD = process.env.CLINICIAN_PASSWORD || 'fogelson2026';
 
 // ── Middleware ────────────────────────────────────────────────────────────────
-app.use(cors({ origin: 'https://bipolarrelapseearlywarningapp.netlify.app' }));
+app.use(cors({
+  origin: ['https://bipolarrelapseearlywarningapp.netlify.app', 'http://localhost:3000', 'null'],
+  credentials: true
+}));
 app.use(express.json());
 
 // ── Simple file-based data store (upgradeable to database later) ──────────────
@@ -401,6 +404,8 @@ app.post('/refresh', async (req, res) => {
 
 // Step 4: Get all patient data for the dashboard
 app.get('/patients', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET');
   var { password } = req.query;
   if (password !== CLINICIAN_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
 
