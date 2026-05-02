@@ -1,4 +1,3 @@
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Bipolar Early Warning System — Backend Server
 // Handles Oura OAuth, nightly data ingestion, and algorithm computation
@@ -30,7 +29,17 @@ const DATA_FILE = path.join(__dirname, 'patients.json');
 function loadPatients() {
   try {
     if (fs.existsSync(DATA_FILE)) {
-      return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      var raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+      // Sanitize keys — remove any corrupted patient IDs
+      var clean = {};
+      Object.keys(raw).forEach(function(k) {
+        var cleanKey = k.replace(/[^a-zA-Z0-9_-]/g, '');
+        if (cleanKey && cleanKey.length > 0) {
+          clean[cleanKey] = raw[k];
+          clean[cleanKey].id = cleanKey;
+        }
+      });
+      return clean;
     }
   } catch(e) { console.error('Load error:', e); }
   return {};
@@ -250,7 +259,9 @@ app.get('/enroll', (req, res) => {
 
 // Step 2: Handle OAuth callback from Oura
 app.get('/callback', async (req, res) => {
-  var { code, state: patientId } = req.query;
+  var { code, state } = req.query;
+  // Sanitize patient ID — remove any extra characters
+  var patientId = state ? state.toString().replace(/[^a-zA-Z0-9_-]/g, '') : null;
   if (!code || !patientId) return res.status(400).send('Missing code or patient ID');
 
   try {
@@ -270,7 +281,14 @@ app.get('/callback', async (req, res) => {
 
     // Store tokens for this patient
     var patients = loadPatients();
-    if (!patients[patientId]) patients[patientId] = { id: patientId };
+    if (!patients[patientId]) {
+      patients[patientId] = {
+        id: patientId,
+        name: 'Patient ' + patientId,
+        // Default baseline — updated via /patients/:id endpoint
+        baseline: { sleep: 7.0, hrv: 35, activity: 10000, hr: 54, resp: 14, eff: 85 }
+      };
+    }
     patients[patientId].access_token  = access_token;
     patients[patientId].refresh_token = refresh_token;
     patients[patientId].connected     = true;
