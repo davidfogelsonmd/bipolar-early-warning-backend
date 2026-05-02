@@ -1,3 +1,4 @@
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Bipolar Early Warning System — Backend Server
 // Handles Oura OAuth, nightly data ingestion, and algorithm computation
@@ -247,14 +248,15 @@ app.get('/enroll', (req, res) => {
   if (!patientId) return res.status(400).json({ error: 'patient_id required' });
 
   var scope = 'personal daily heartrate workout tag session spo2 sleep';
+  var cleanId = patientId.replace(/[^a-zA-Z0-9_-]/g, '');
   var url = `https://cloud.ouraring.com/oauth/authorize`
     + `?response_type=code`
     + `&client_id=${OURA_CLIENT_ID}`
     + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
     + `&scope=${encodeURIComponent(scope)}`
-    + `&state=${patientId}`;
+    + `&state=${encodeURIComponent(cleanId)}`;
 
-  res.json({ authorization_url: url, patient_id: patientId });
+  res.json({ authorization_url: url });
 });
 
 // Step 2: Handle OAuth callback from Oura
@@ -458,12 +460,13 @@ app.get('/patients/:id/enroll-link', (req, res) => {
   if (password !== CLINICIAN_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
 
   var scope = 'personal daily heartrate workout tag session spo2 sleep';
+  var cleanId = req.params.id.replace(/[^a-zA-Z0-9_-]/g, '');
   var url = `https://cloud.ouraring.com/oauth/authorize`
     + `?response_type=code`
     + `&client_id=${OURA_CLIENT_ID}`
     + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
     + `&scope=${encodeURIComponent(scope)}`
-    + `&state=${req.params.id}`;
+    + `&state=${encodeURIComponent(cleanId)}`;
 
   res.json({ enrollment_url: url });
 });
