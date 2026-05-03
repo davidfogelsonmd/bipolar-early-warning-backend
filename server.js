@@ -1,14 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Bipolar Early Warning System — Backend Server
 // Handles Oura OAuth, nightly data ingestion, and algorithm computation
-// Deploy on Render.com (free tier)
+// Deploy on Render.com — uses Upstash Redis for persistent storage
 // ─────────────────────────────────────────────────────────────────────────────
 
 const express = require('express');
 const cors    = require('cors');
 const axios   = require('axios');
-const fs      = require('fs');
-const path    = require('path');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -16,42 +14,53 @@ const PORT = process.env.PORT || 3000;
 // ── Environment variables (set in Render dashboard) ──────────────────────────
 const OURA_CLIENT_ID     = process.env.OURA_CLIENT_ID;
 const OURA_CLIENT_SECRET = process.env.OURA_CLIENT_SECRET;
-const REDIRECT_URI       = process.env.REDIRECT_URI || 'https://bipolarrelapseearlywarningapp.netlify.app/callback';
+const REDIRECT_URI       = process.env.REDIRECT_URI || 'https://bipolar-early-warning-backend.onrender.com/callback';
 const CLINICIAN_PASSWORD = process.env.CLINICIAN_PASSWORD || 'fogelson2026';
+const REDIS_URL          = process.env.UPSTASH_REDIS_REST_URL;
+const REDIS_TOKEN        = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 // ── Middleware ────────────────────────────────────────────────────────────────
-app.use(cors({
-  origin: ['https://bipolarrelapseearlywarningapp.netlify.app', 'http://localhost:3000', 'null'],
-  credentials: true
-}));
+app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// ── Simple file-based data store (upgradeable to database later) ──────────────
-const DATA_FILE = path.join(__dirname, 'patients.json');
-
-function loadPatients() {
+// ── Upstash Redis storage ─────────────────────────────────────────────────────
+async function redisGet(key) {
   try {
-    if (fs.existsSync(DATA_FILE)) {
-      var raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      // Sanitize keys — remove any corrupted patient IDs
-      var clean = {};
-      Object.keys(raw).forEach(function(k) {
-        var cleanKey = k.replace(/[^a-zA-Z0-9_-]/g, '');
-        if (cleanKey && cleanKey.length > 0) {
-          clean[cleanKey] = raw[k];
-          clean[cleanKey].id = cleanKey;
-        }
-      });
-      return clean;
+    var res = await axios.get(REDIS_URL + '/get/' + key, {
+      headers: { Authorization: 'Bearer ' + REDIS_TOKEN }
+    });
+    if (res.data && res.data.result) {
+      return JSON.parse(res.data.result);
     }
-  } catch(e) { console.error('Load error:', e); }
-  return {};
+    return null;
+  } catch(e) { console.error('Redis GET error:', e.message); return null; }
 }
 
-function savePatients(data) {
+async function redisSet(key, value) {
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-  } catch(e) { console.error('Save error:', e); }
+    await axios.post(REDIS_URL + '/set/' + key, JSON.stringify(value), {
+      headers: { Authorization: 'Bearer ' + REDIS_TOKEN, 'Content-Type': 'application/json' }
+    });
+  } catch(e) { console.error('Redis SET error:', e.message); }
+}
+
+async function loadPatients() {
+  var data = await redisGet('patients');
+  if (!data) return {};
+  // Sanitize keys
+  var clean = {};
+  Object.keys(data).forEach(function(k) {
+    var cleanKey = k.replace(/[^a-zA-Z0-9_-]/g, '');
+    if (cleanKey && cleanKey.length > 0) {
+      clean[cleanKey] = data[k];
+      clean[cleanKey].id = cleanKey;
+    }
+  });
+  return clean;
+}
+
+async function savePatients(data) {
+  await redisSet('patients', data);
 }
 
 // ── ALGORITHM v3 (server-side) ────────────────────────────────────────────────
@@ -284,12 +293,11 @@ app.get('/callback', async (req, res) => {
     var { access_token, refresh_token } = tokenRes.data;
 
     // Store tokens for this patient
-    var patients = loadPatients();
+    var patients = await loadPatients();
     if (!patients[patientId]) {
       patients[patientId] = {
         id: patientId,
         name: 'Patient ' + patientId,
-        // Default baseline — updated via /patients/:id endpoint
         baseline: { sleep: 7.0, hrv: 35, activity: 10000, hr: 54, resp: 14, eff: 85 }
       };
     }
@@ -297,11 +305,11 @@ app.get('/callback', async (req, res) => {
     patients[patientId].refresh_token = refresh_token;
     patients[patientId].connected     = true;
     patients[patientId].connected_at  = new Date().toISOString();
-    savePatients(patients);
+    await savePatients(patients);
 
     // Fetch initial data
     await fetchAndUpdatePatient(patientId, access_token, patients);
-    savePatients(patients);
+    await savePatients(patients);
 
     res.send(`
       <html><body style="font-family:sans-serif;text-align:center;padding:3rem;">
@@ -387,7 +395,7 @@ app.post('/refresh', async (req, res) => {
   var { password } = req.body;
   if (password !== CLINICIAN_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
 
-  var patients = loadPatients();
+  var patients = await loadPatients();
   var results  = [];
 
   for (var id of Object.keys(patients)) {
@@ -397,18 +405,18 @@ app.post('/refresh', async (req, res) => {
     results.push({ id, status: p.status, maniaRisk: p.maniaRisk, depRisk: p.depRisk });
   }
 
-  savePatients(patients);
+  await savePatients(patients);
   res.json({ updated: results.length, patients: results });
 });
 
 // Step 4: Get all patient data for the dashboard
-app.get('/patients', (req, res) => {
+app.get('/patients', async (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET');
   var { password } = req.query;
   if (password !== CLINICIAN_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
 
-  var patients = loadPatients();
+  var patients = await loadPatients();
   var result   = Object.values(patients).map(p => ({
     id:              p.id,
     name:            p.name || 'Patient ' + p.id,
@@ -442,11 +450,11 @@ app.get('/patients', (req, res) => {
 });
 
 // Step 5: Add or update patient clinical profile
-app.post('/patients/:id', (req, res) => {
+app.post('/patients/:id', async (req, res) => {
   var { password } = req.query;
   if (password !== CLINICIAN_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
 
-  var patients = loadPatients();
+  var patients = await loadPatients();
   var id       = req.params.id;
   if (!patients[id]) patients[id] = { id };
 
@@ -454,7 +462,7 @@ app.post('/patients/:id', (req, res) => {
                  'lastDepDate','lastDepPolarity','typicalProdrome','baseline'];
   allowed.forEach(k => { if (req.body[k] !== undefined) patients[id][k] = req.body[k]; });
 
-  savePatients(patients);
+  await savePatients(patients);
   res.json({ success: true, patient: patients[id] });
 });
 
@@ -467,14 +475,4 @@ app.get('/patients/:id/enroll-link', (req, res) => {
   var cleanId = req.params.id.replace(/[^a-zA-Z0-9_-]/g, '');
   var url = `https://cloud.ouraring.com/oauth/authorize`
     + `?response_type=code`
-    + `&client_id=${OURA_CLIENT_ID}`
-    + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
-    + `&scope=${encodeURIComponent(scope)}`
-    + `&state=${encodeURIComponent(cleanId)}`;
-
-  res.json({ enrollment_url: url });
-});
-
-app.listen(PORT, () => {
-  console.log(`Bipolar Early Warning backend running on port ${PORT}`);
-});
+    + `&client_id=${OURA_CL
