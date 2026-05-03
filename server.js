@@ -7,6 +7,7 @@
 const express = require('express');
 const cors    = require('cors');
 const axios   = require('axios');
+const { Redis } = require('@upstash/redis');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -16,51 +17,46 @@ const OURA_CLIENT_ID     = process.env.OURA_CLIENT_ID;
 const OURA_CLIENT_SECRET = process.env.OURA_CLIENT_SECRET;
 const REDIRECT_URI       = process.env.REDIRECT_URI || 'https://bipolar-early-warning-backend.onrender.com/callback';
 const CLINICIAN_PASSWORD = process.env.CLINICIAN_PASSWORD || 'fogelson2026';
-const REDIS_URL          = process.env.UPSTASH_REDIS_REST_URL;
-const REDIS_TOKEN        = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+// ── Upstash Redis client ──────────────────────────────────────────────────────
+const redis = new Redis({
+  url:   process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// ── Upstash Redis storage ─────────────────────────────────────────────────────
-async function redisGet(key) {
-  try {
-    var res = await axios.get(REDIS_URL + '/get/' + key, {
-      headers: { Authorization: 'Bearer ' + REDIS_TOKEN }
-    });
-    if (res.data && res.data.result) {
-      return JSON.parse(res.data.result);
-    }
-    return null;
-  } catch(e) { console.error('Redis GET error:', e.message); return null; }
-}
-
-async function redisSet(key, value) {
-  try {
-    await axios.post(REDIS_URL + '/set/' + key, JSON.stringify(value), {
-      headers: { Authorization: 'Bearer ' + REDIS_TOKEN, 'Content-Type': 'application/json' }
-    });
-  } catch(e) { console.error('Redis SET error:', e.message); }
-}
-
+// ── Storage functions ─────────────────────────────────────────────────────────
 async function loadPatients() {
-  var data = await redisGet('patients');
-  if (!data) return {};
-  // Sanitize keys
-  var clean = {};
-  Object.keys(data).forEach(function(k) {
-    var cleanKey = k.replace(/[^a-zA-Z0-9_-]/g, '');
-    if (cleanKey && cleanKey.length > 0) {
-      clean[cleanKey] = data[k];
-      clean[cleanKey].id = cleanKey;
-    }
-  });
-  return clean;
+  try {
+    var data = await redis.get('patients');
+    if (!data) return {};
+    var raw = typeof data === 'string' ? JSON.parse(data) : data;
+    // Sanitize keys
+    var clean = {};
+    Object.keys(raw).forEach(function(k) {
+      var cleanKey = k.replace(/[^a-zA-Z0-9_-]/g, '');
+      if (cleanKey && cleanKey.length > 0) {
+        clean[cleanKey] = raw[k];
+        clean[cleanKey].id = cleanKey;
+      }
+    });
+    return clean;
+  } catch(e) {
+    console.error('Redis load error:', e.message);
+    return {};
+  }
 }
 
 async function savePatients(data) {
-  await redisSet('patients', data);
+  try {
+    await redis.set('patients', JSON.stringify(data));
+    console.log('Saved patients to Redis:', Object.keys(data).length, 'patients');
+  } catch(e) {
+    console.error('Redis save error:', e.message);
+  }
 }
 
 // ── ALGORITHM v3 (server-side) ────────────────────────────────────────────────
@@ -247,6 +243,17 @@ function parseOuraData(sleepData, activityData, days) {
 }
 
 // ── ROUTES ────────────────────────────────────────────────────────────────────
+
+// Redis connection test
+app.get('/test-redis', async (req, res) => {
+  try {
+    await redis.set('test', 'hello');
+    var val = await redis.get('test');
+    res.json({ success: true, value: val, url_set: !!process.env.UPSTASH_REDIS_REST_URL, token_set: !!process.env.UPSTASH_REDIS_REST_TOKEN });
+  } catch(e) {
+    res.json({ success: false, error: e.message, url_set: !!process.env.UPSTASH_REDIS_REST_URL, token_set: !!process.env.UPSTASH_REDIS_REST_TOKEN });
+  }
+});
 
 // Health check
 app.get('/health', (req, res) => {
@@ -475,4 +482,14 @@ app.get('/patients/:id/enroll-link', (req, res) => {
   var cleanId = req.params.id.replace(/[^a-zA-Z0-9_-]/g, '');
   var url = `https://cloud.ouraring.com/oauth/authorize`
     + `?response_type=code`
-    + `&client_id=${OURA_CL
+    + `&client_id=${OURA_CLIENT_ID}`
+    + `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}`
+    + `&scope=${encodeURIComponent(scope)}`
+    + `&state=${encodeURIComponent(cleanId)}`;
+
+  res.json({ enrollment_url: url });
+});
+
+app.listen(PORT, () => {
+  console.log(`Bipolar Early Warning backend running on port ${PORT}`);
+});
