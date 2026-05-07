@@ -265,7 +265,26 @@ function parseOuraData(sleepData,activityData,days){
   (sleepData||[]).forEach(function(s){
     var date=s.day||s.date;
     if(!date) return;
-    sleepByDate[date]={total_sleep:s.total_sleep_duration?s.total_sleep_duration/3600:null,efficiency:s.efficiency||null,hr:s.average_heart_rate||null,hrv:s.average_hrv||null,breath:s.average_breath||null,temp:s.temperature_deviation||null,onset:s.bedtime_start||null};
+    var totalSleep=s.total_sleep_duration?s.total_sleep_duration/3600:null;
+    var hrv=s.average_hrv||null;
+    var hr=s.average_heart_rate||null;
+    // Non-wear detection: if sleep is very short AND both HRV and HR are null,
+    // the ring was not worn — treat as null rather than genuine short sleep.
+    // A genuinely manic patient sleeping 0 hours would still have HRV and HR recorded.
+    var isNonWear=(totalSleep!==null&&totalSleep<0.5&&hrv===null&&hr===null);
+    if(isNonWear){
+      console.log('Non-wear night detected for '+date+': sleep='+totalSleep+'h, HRV=null, HR=null');
+      totalSleep=null;
+    }
+    sleepByDate[date]={
+      total_sleep:totalSleep,
+      efficiency:isNonWear?null:(s.efficiency||null),
+      hr:hr,hrv:hrv,
+      breath:s.average_breath||null,
+      temp:s.temperature_deviation||null,
+      onset:s.bedtime_start||null,
+      nonWear:isNonWear
+    };
   });
   (activityData||[]).forEach(function(a){
     var date=a.day||a.date;
@@ -279,8 +298,9 @@ function parseOuraData(sleepData,activityData,days){
     hrv:days.map(function(d){return sleepByDate[d]?sleepByDate[d].hrv:null;}),
     hr:days.map(function(d){return sleepByDate[d]?sleepByDate[d].hr:null;}),
     activity:days.map(function(d){return activityByDate[d]?activityByDate[d].steps:null;}),
-    tempDev:last?last.temp:0,
-    respRate:last?last.breath:14
+    nonWearDays:days.map(function(d){return sleepByDate[d]?sleepByDate[d].nonWear:false;}),
+    tempDev:last&&!last.nonWear?last.temp:null,
+    respRate:last&&!last.nonWear?last.breath:14
   };
 }
 
@@ -298,6 +318,7 @@ async function fetchAndUpdatePatient(patientId,accessToken,patients){
   var parsed=parseOuraData(results[0].data.data,results[1].data.data,days);
   var p=patients[patientId];
   Object.assign(p,parsed);
+  p.nonWearDays=parsed.nonWearDays||[];
   p.days=days;
   p.last_sync=new Date().toISOString();
   var lastSleep=results[0].data.data.slice(-1)[0];
@@ -405,7 +426,7 @@ app.get('/patients', async function(req,res){
   if(password!==CLINICIAN_PASSWORD) return res.status(401).json({error:'Unauthorized'});
   var patients=await loadPatients();
   var result=Object.values(patients).map(function(p){
-    return {id:p.id,name:p.name||'Patient '+p.id,age:p.age,gender:p.gender,dx:p.dx,predominantPolarity:p.predominantPolarity,lastManiaDate:p.lastManiaDate,lastDepDate:p.lastDepDate,typicalProdrome:p.typicalProdrome,maniaRisk:p.maniaRisk,depRisk:p.depRisk,maniaTrend:p.maniaTrend,depTrend:p.depTrend,status:p.status,connected:p.connected||false,last_sync:p.last_sync,sleep:p.sleep,sleepEff:p.sleepEff,hrv:p.hrv,hr:p.hr,activity:p.activity,tempDev:p.tempDev,respRate:p.respRate,circadianShift:p.circadianShift,days:p.days,baseline:p.baseline};
+    return {id:p.id,name:p.name||'Patient '+p.id,age:p.age,gender:p.gender,dx:p.dx,predominantPolarity:p.predominantPolarity,lastManiaDate:p.lastManiaDate,lastDepDate:p.lastDepDate,typicalProdrome:p.typicalProdrome,maniaRisk:p.maniaRisk,depRisk:p.depRisk,maniaTrend:p.maniaTrend,depTrend:p.depTrend,status:p.status,connected:p.connected||false,last_sync:p.last_sync,sleep:p.sleep,sleepEff:p.sleepEff,hrv:p.hrv,hr:p.hr,activity:p.activity,tempDev:p.tempDev,respRate:p.respRate,circadianShift:p.circadianShift,days:p.days,baseline:p.baseline,nonWearDays:p.nonWearDays||[]};
   });
   res.json({patients:result,last_updated:new Date().toISOString()});
 });
