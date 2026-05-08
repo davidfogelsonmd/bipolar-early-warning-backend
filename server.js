@@ -362,7 +362,10 @@ app.get('/queue/status', async function(req,res){
   if(password!==CLINICIAN_PASSWORD) return res.status(401).json({error:'Unauthorized'});
   try {
     var status=await redis.get('queue_status');
-    res.json(status?JSON.parse(status):{message:'No refresh run yet'});
+    if(!status) return res.json({message:'No refresh run yet'});
+    // Upstash SDK may auto-parse JSON — handle both string and object
+    var parsed=typeof status==='string'?JSON.parse(status):status;
+    res.json(parsed);
   } catch(e){res.json({error:e.message});}
 });
 
@@ -435,7 +438,7 @@ app.get('/patients', async function(req,res){
   if(password!==CLINICIAN_PASSWORD) return res.status(401).json({error:'Unauthorized'});
   var patients=await loadPatients();
   var result=Object.values(patients).map(function(p){
-    return {id:p.id,name:p.name||'Patient '+p.id,age:p.age,gender:p.gender,dx:p.dx,predominantPolarity:p.predominantPolarity,lastManiaDate:p.lastManiaDate,lastDepDate:p.lastDepDate,typicalProdrome:p.typicalProdrome,maniaRisk:p.maniaRisk,depRisk:p.depRisk,maniaTrend:p.maniaTrend,depTrend:p.depTrend,status:p.status,connected:p.connected||false,last_sync:p.last_sync,sleep:p.sleep,sleepEff:p.sleepEff,hrv:p.hrv,hr:p.hr,activity:p.activity,tempDev:p.tempDev,respRate:p.respRate,circadianShift:p.circadianShift,days:p.days,baseline:p.baseline,nonWearDays:p.nonWearDays||[]};
+    return {id:p.id,name:p.name||'Patient '+p.id,age:p.age,gender:p.gender,dx:p.dx,predominantPolarity:p.predominantPolarity,lastManiaDate:p.lastManiaDate,lastDepDate:p.lastDepDate,lastDepPolarity:p.lastDepPolarity,typicalProdrome:p.typicalProdrome,maniaRisk:p.maniaRisk,depRisk:p.depRisk,maniaTrend:p.maniaTrend,depTrend:p.depTrend,status:p.status,connected:p.connected||false,last_sync:p.last_sync,sleep:p.sleep,sleepEff:p.sleepEff,hrv:p.hrv,hr:p.hr,activity:p.activity,tempDev:p.tempDev,respRate:p.respRate,circadianShift:p.circadianShift,days:p.days,baseline:p.baseline,nonWearDays:p.nonWearDays||[],depEpisodeSeverity:p.depEpisodeSeverity,maniaEpisodeSeverity:p.maniaEpisodeSeverity,worstEpisodeSeverity:p.worstEpisodeSeverity,elevatedThreshold:p.elevatedThreshold,highThreshold:p.highThreshold};
   });
   res.json({patients:result,last_updated:new Date().toISOString()});
 });
