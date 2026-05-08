@@ -454,4 +454,13 @@ app.post('/patients/:id', async function(req,res){
   res.json({success:true,patient:patients[id]});
 });
 
+app.get('/patients/:id/enroll-link', function(req,res){
+  var password=req.query.password;
+  if(password!==CLINICIAN_PASSWORD) return res.status(401).json({error:'Unauthorized'});
+  var scope='personal daily heartrate workout tag session spo2 sleep';
+  var cleanId=req.params.id.replace(/[^a-zA-Z0-9_-]/g,'');
+  var url='https://cloud.ouraring.com/oauth/authorize?response_type=code&client_id='+OURA_CLIENT_ID+'&redirect_uri='+encodeURIComponent(REDIRECT_URI)+'&scope='+encodeURIComponent(scope)+'&state='+encodeURIComponent(cleanId);
+  res.json({enrollment_url:url});
+});
+
 app.listen(PORT,function(){console.log('Bipolar Early Warning v3 running on port '+PORT);});
