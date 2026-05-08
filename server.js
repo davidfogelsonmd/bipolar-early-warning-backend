@@ -449,7 +449,7 @@ app.post('/patients/:id', async function(req,res){
   var patients=await loadPatients();
   var id=req.params.id;
   if(!patients[id]) patients[id]={id:id};
-  ['name','age','gender','dx','predominantPolarity','lastManiaDate','lastDepDate','lastDepPolarity','typicalProdrome','baseline'].forEach(function(k){if(req.body[k]!==undefined) patients[id][k]=req.body[k];});
+  ['name','age','gender','dx','predominantPolarity','lastManiaDate','lastDepDate','lastDepPolarity','typicalProdrome','baseline','depEpisodeSeverity','maniaEpisodeSeverity','worstEpisodeSeverity','elevatedThreshold','highThreshold'].forEach(function(k){if(req.body[k]!==undefined) patients[id][k]=req.body[k];});
   await savePatients(patients);
   res.json({success:true,patient:patients[id]});
 });
