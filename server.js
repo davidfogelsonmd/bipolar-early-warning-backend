@@ -289,7 +289,16 @@ function parseOuraData(sleepData,activityData,days){
   (activityData||[]).forEach(function(a){
     var date=a.day||a.date;
     if(!date) return;
-    activityByDate[date]={steps:a.steps||null};
+    var steps=a.steps||null;
+    // Plausibility check: today's data may be an incomplete sync
+    // Values below 500 steps for an ambulatory patient are almost certainly partial syncs
+    // Historical days are fully processed and reliable — only apply to most recent day
+    var today=new Date().toISOString().split('T')[0];
+    if(date===today && steps!==null && steps>0 && steps<500){
+      console.log('Implausible activity for today ('+steps+' steps) — likely incomplete sync, treating as null');
+      steps=null;
+    }
+    activityByDate[date]={steps:steps};
   });
   var last=sleepByDate[days[days.length-1]];
   return {
