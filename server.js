@@ -340,6 +340,17 @@ async function fetchAndUpdatePatient(patientId,accessToken,patients){
     p.maniaRisk=risk.maniaScore;p.depRisk=risk.depScore;
     p.maniaTrend=risk.maniaTrend;p.depTrend=risk.depTrend;
     p.status=Math.max(p.maniaRisk||0,p.depRisk||0)>=75?'high':Math.max(p.maniaRisk||0,p.depRisk||0)>=50?'warn':'ok';
+
+    // Append today's scores to 30-day history
+    // Stored as array of {date, mania, dep} objects, max 30 entries
+    var today=new Date().toISOString().split('T')[0];
+    if(!p.riskHistory) p.riskHistory=[];
+    // Remove any existing entry for today (in case of multiple refreshes)
+    p.riskHistory=p.riskHistory.filter(function(h){return h.date!==today;});
+    p.riskHistory.push({date:today, mania:p.maniaRisk, dep:p.depRisk});
+    // Keep only last 30 days
+    p.riskHistory.sort(function(a,b){return a.date.localeCompare(b.date);});
+    if(p.riskHistory.length>30) p.riskHistory=p.riskHistory.slice(-30);
   }
 }
 
@@ -438,7 +449,7 @@ app.get('/patients', async function(req,res){
   if(password!==CLINICIAN_PASSWORD) return res.status(401).json({error:'Unauthorized'});
   var patients=await loadPatients();
   var result=Object.values(patients).map(function(p){
-    return {id:p.id,name:p.name||'Patient '+p.id,age:p.age,gender:p.gender,dx:p.dx,predominantPolarity:p.predominantPolarity,lastManiaDate:p.lastManiaDate,lastDepDate:p.lastDepDate,lastDepPolarity:p.lastDepPolarity,typicalProdrome:p.typicalProdrome,maniaRisk:p.maniaRisk,depRisk:p.depRisk,maniaTrend:p.maniaTrend,depTrend:p.depTrend,status:p.status,connected:p.connected||false,last_sync:p.last_sync,sleep:p.sleep,sleepEff:p.sleepEff,hrv:p.hrv,hr:p.hr,activity:p.activity,tempDev:p.tempDev,respRate:p.respRate,circadianShift:p.circadianShift,days:p.days,baseline:p.baseline,nonWearDays:p.nonWearDays||[],depEpisodeSeverity:p.depEpisodeSeverity,maniaEpisodeSeverity:p.maniaEpisodeSeverity,worstEpisodeSeverity:p.worstEpisodeSeverity,elevatedThreshold:p.elevatedThreshold,highThreshold:p.highThreshold};
+    return {id:p.id,name:p.name||'Patient '+p.id,age:p.age,gender:p.gender,dx:p.dx,predominantPolarity:p.predominantPolarity,lastManiaDate:p.lastManiaDate,lastDepDate:p.lastDepDate,lastDepPolarity:p.lastDepPolarity,typicalProdrome:p.typicalProdrome,maniaRisk:p.maniaRisk,depRisk:p.depRisk,maniaTrend:p.maniaTrend,depTrend:p.depTrend,status:p.status,connected:p.connected||false,last_sync:p.last_sync,sleep:p.sleep,sleepEff:p.sleepEff,hrv:p.hrv,hr:p.hr,activity:p.activity,tempDev:p.tempDev,respRate:p.respRate,circadianShift:p.circadianShift,days:p.days,baseline:p.baseline,nonWearDays:p.nonWearDays||[],depEpisodeSeverity:p.depEpisodeSeverity,maniaEpisodeSeverity:p.maniaEpisodeSeverity,worstEpisodeSeverity:p.worstEpisodeSeverity,elevatedThreshold:p.elevatedThreshold,highThreshold:p.highThreshold,riskHistory:p.riskHistory||[]};
   });
   res.json({patients:result,last_updated:new Date().toISOString()});
 });
