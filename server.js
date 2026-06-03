@@ -308,7 +308,7 @@ function parseOuraData(sleepData,activityData,days){
     hr:days.map(function(d){return sleepByDate[d]?sleepByDate[d].hr:null;}),
     activity:days.map(function(d){return activityByDate[d]?activityByDate[d].steps:null;}),
     nonWearDays:days.map(function(d){return sleepByDate[d]?sleepByDate[d].nonWear:false;}),
-    tempDev:last&&!last.nonWear?last.temp:null,
+    tempDev:(function(){for(var ti=days.length-1;ti>=0;ti--){var sd=sleepByDate[days[ti]];if(sd&&!sd.nonWear&&sd.temp!==null&&sd.temp!==undefined)return sd.temp;}return null;})(),
     respRate:last&&!last.nonWear?last.breath:14
   };
 }
