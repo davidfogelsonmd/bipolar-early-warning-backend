@@ -2,24 +2,24 @@ var express = require('express');
 var cors = require('cors');
 var axios = require('axios');
 var Redis = require('@upstash/redis').Redis;
-
+ 
 var app = express();
 var PORT = process.env.PORT || 3000;
-
+ 
 var OURA_CLIENT_ID = process.env.OURA_CLIENT_ID;
 var OURA_CLIENT_SECRET = process.env.OURA_CLIENT_SECRET;
 var REDIRECT_URI = process.env.REDIRECT_URI || 'https://bipolar-early-warning-backend.onrender.com/callback';
 var CLINICIAN_PASSWORD = process.env.CLINICIAN_PASSWORD || 'fogelson2026';
 var CRON_SECRET = process.env.CRON_SECRET || 'cron2026';
-
+ 
 var redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
-
+ 
 app.use(cors({ origin: '*' }));
 app.use(express.json());
-
+ 
 // ── STORAGE ───────────────────────────────────────────────────────────────────
 async function loadPatients() {
   try {
@@ -40,7 +40,7 @@ async function loadPatients() {
     return {};
   }
 }
-
+ 
 async function savePatients(data) {
   try {
     await redis.set('patients', JSON.stringify(data));
@@ -49,7 +49,7 @@ async function savePatients(data) {
     console.error('Redis save error:', e.message);
   }
 }
-
+ 
 // ── QUEUE SYSTEM ──────────────────────────────────────────────────────────────
 async function enqueueRefresh(patientIds) {
   try {
@@ -68,15 +68,15 @@ async function enqueueRefresh(patientIds) {
     console.error('Queue error:', e.message);
   }
 }
-
+ 
 async function processRefreshQueue() {
   var patients = await loadPatients();
   var ids = Object.keys(patients);
   var results = [];
   var errors = [];
-
+ 
   console.log('Processing refresh queue: ' + ids.length + ' patients');
-
+ 
   var batchSize = 10;
   for (var i = 0; i < ids.length; i += batchSize) {
     var batch = ids.slice(i, i + batchSize);
@@ -94,9 +94,9 @@ async function processRefreshQueue() {
       await new Promise(function(resolve) { setTimeout(resolve, 1000); });
     }
   }
-
+ 
   await savePatients(patients);
-
+ 
   var queueStatus = {
     last_run: new Date().toISOString(),
     patients_refreshed: results.length,
@@ -104,30 +104,30 @@ async function processRefreshQueue() {
     next_run: getNextRunTime()
   };
   await redis.set('queue_status', JSON.stringify(queueStatus));
-
+ 
   return { refreshed: results.length, errors: errors.length, results: results };
 }
-
+ 
 async function refreshPatient(id, patients) {
   var p = patients[id];
   if (!p || !p.access_token) {
     return { id: id, status: 'skipped', reason: 'no access token' };
   }
-
+ 
   try {
     var jobKey = 'job:' + id;
     await redis.set(jobKey, JSON.stringify({ patientId: id, status: 'running', started_at: new Date().toISOString() }));
     await redis.expire(jobKey, 3600);
-
+ 
     await fetchAndUpdatePatient(id, p.access_token, patients);
-
+ 
     await redis.set(jobKey, JSON.stringify({
       patientId: id, status: 'complete',
       completed_at: new Date().toISOString(),
       maniaRisk: p.maniaRisk, depRisk: p.depRisk, status_risk: p.status
     }));
     await redis.expire(jobKey, 3600);
-
+ 
     return { id: id, status: 'ok', maniaRisk: p.maniaRisk, depRisk: p.depRisk };
   } catch(e) {
     await redis.set(jobKey, JSON.stringify({ patientId: id, status: 'error', error: e.message }));
@@ -135,7 +135,7 @@ async function refreshPatient(id, patients) {
     throw e;
   }
 }
-
+ 
 function getNextRunTime() {
   var now = new Date();
   var hours = [6, 9, 12, 15, 18, 21];
@@ -146,10 +146,10 @@ function getNextRunTime() {
   if (nextHour <= now.getHours()) next.setDate(next.getDate() + 1);
   return next.toISOString();
 }
-
+ 
 // ── ALGORITHM ─────────────────────────────────────────────────────────────────
 function clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v));}
-
+ 
 function activityScore(actArr, baseline, direction){
   var threshold=baseline*0.25;
   var valid=actArr.filter(function(v){return v!==null;});
@@ -182,7 +182,7 @@ function activityScore(actArr, baseline, direction){
   }
   return Math.max(freqScore,streakScore);
 }
-
+ 
 function validAvg(arr,indices){
   var sum=0,n=0;
   for(var i=0;i<indices.length;i++){
@@ -191,12 +191,12 @@ function validAvg(arr,indices){
   }
   return n>0?sum/n:null;
 }
-
+ 
 function devScore(val,base,dir,maxDev){
   if(val===null||val===undefined) return 0;
   return clamp((val-base)*dir/maxDev,0,1);
 }
-
+ 
 function computeRisk(p){
   var b=p.baseline;
   var valid=(p.activity||[]).filter(function(v){return v!==null;}).length;
@@ -242,10 +242,10 @@ function computeRisk(p){
     depTrend:depDelta>5?'rising':depDelta<-5?'falling':'stable'
   };
 }
-
+ 
 // ── OURA DATA FETCH ───────────────────────────────────────────────────────────
-function parseOuraData(sleepData,activityData,readinessData,days){
-  var sleepByDate={},activityByDate={},tempByDate={};
+function parseOuraData(sleepData,activityData,days){
+  var sleepByDate={},activityByDate={};
   (sleepData||[]).forEach(function(s){
     var date=s.day||s.date;
     if(!date) return;
@@ -267,13 +267,6 @@ function parseOuraData(sleepData,activityData,readinessData,days){
       nonWear:isNonWear
     };
   });
-  (readinessData||[]).forEach(function(r){
-    var date=r.day||r.date;
-    if(!date) return;
-    var t=(r.temperature_deviation!==undefined&&r.temperature_deviation!==null)?r.temperature_deviation:
-          ((r.temperature_trend_deviation!==undefined&&r.temperature_trend_deviation!==null)?r.temperature_trend_deviation:null);
-    tempByDate[date]=t;
-  });
   (activityData||[]).forEach(function(a){
     var date=a.day||a.date;
     if(!date) return;
@@ -293,11 +286,11 @@ function parseOuraData(sleepData,activityData,readinessData,days){
     hr:days.map(function(d){return sleepByDate[d]?sleepByDate[d].hr:null;}),
     activity:days.map(function(d){return activityByDate[d]?activityByDate[d].steps:null;}),
     nonWearDays:days.map(function(d){return sleepByDate[d]?sleepByDate[d].nonWear:false;}),
-    tempDev:(function(){for(var ti=days.length-1;ti>=0;ti--){var sd=sleepByDate[days[ti]];if(sd&&sd.nonWear)continue;var t=tempByDate[days[ti]];if(t!==null&&t!==undefined)return t;}return null;})(),
+    tempDev:(function(){for(var ti=days.length-1;ti>=0;ti--){var sd=sleepByDate[days[ti]];if(sd&&!sd.nonWear&&sd.temp!==null&&sd.temp!==undefined)return sd.temp;}return null;})(),
     respRate:last&&!last.nonWear?last.breath:14
   };
 }
-
+ 
 async function fetchAndUpdatePatient(patientId,accessToken,patients){
   var endDate=new Date(),startDate=new Date();
   startDate.setDate(endDate.getDate()-8);
@@ -306,11 +299,10 @@ async function fetchAndUpdatePatient(patientId,accessToken,patients){
   var results=await Promise.all([
     axios.get('https://api.ouraring.com/v2/usercollection/sleep?start_date='+start+'&end_date='+end,{headers:headers}),
     axios.get('https://api.ouraring.com/v2/usercollection/daily_activity?start_date='+start+'&end_date='+end,{headers:headers}),
-    axios.get('https://api.ouraring.com/v2/usercollection/daily_readiness?start_date='+start+'&end_date='+end,{headers:headers}),
   ]);
   var days=[];
   for(var i=6;i>=0;i--){var d=new Date();d.setDate(d.getDate()-i);days.push(d.toISOString().split('T')[0]);}
-  var parsed=parseOuraData(results[0].data.data,results[1].data.data,results[2].data.data,days);
+  var parsed=parseOuraData(results[0].data.data,results[1].data.data,days);
   var p=patients[patientId];
   Object.assign(p,parsed);
   p.nonWearDays=parsed.nonWearDays||[];
@@ -326,7 +318,7 @@ async function fetchAndUpdatePatient(patientId,accessToken,patients){
     p.maniaRisk=risk.maniaScore;p.depRisk=risk.depScore;
     p.maniaTrend=risk.maniaTrend;p.depTrend=risk.depTrend;
     p.status=Math.max(p.maniaRisk||0,p.depRisk||0)>=75?'high':Math.max(p.maniaRisk||0,p.depRisk||0)>=50?'warn':'ok';
-
+ 
     var today=new Date().toISOString().split('T')[0];
     if(!p.riskHistory) p.riskHistory=[];
     p.riskHistory=p.riskHistory.filter(function(h){return h.date!==today;});
@@ -335,7 +327,7 @@ async function fetchAndUpdatePatient(patientId,accessToken,patients){
     if(p.riskHistory.length>30) p.riskHistory=p.riskHistory.slice(-30);
   }
 }
-
+ 
 // ── ROUTES ────────────────────────────────────────────────────────────────────
 app.get('/test-redis', async function(req,res){
   try {
@@ -344,11 +336,11 @@ app.get('/test-redis', async function(req,res){
     res.json({success:true,value:val,url_set:!!process.env.UPSTASH_REDIS_REST_URL,token_set:!!process.env.UPSTASH_REDIS_REST_TOKEN});
   } catch(e){res.json({success:false,error:e.message});}
 });
-
+ 
 app.get('/health', function(req,res){
   res.json({status:'ok',service:'Bipolar Early Warning Backend',version:'3.0-queue'});
 });
-
+ 
 app.get('/queue/status', async function(req,res){
   var password=req.query.password;
   if(password!==CLINICIAN_PASSWORD) return res.status(401).json({error:'Unauthorized'});
@@ -359,7 +351,7 @@ app.get('/queue/status', async function(req,res){
     res.json(parsed);
   } catch(e){res.json({error:e.message});}
 });
-
+ 
 app.post('/queue/run', async function(req,res){
   var secret=req.headers['x-cron-secret']||req.body.secret;
   if(secret!==CRON_SECRET) return res.status(401).json({error:'Unauthorized'});
@@ -375,7 +367,7 @@ app.post('/queue/run', async function(req,res){
     res.status(500).json({error:e.message});
   }
 });
-
+ 
 app.post('/refresh', async function(req,res){
   var password=req.body.password;
   if(password!==CLINICIAN_PASSWORD) return res.status(401).json({error:'Unauthorized'});
@@ -384,7 +376,7 @@ app.post('/refresh', async function(req,res){
     res.json({success:true,result:result});
   } catch(e){res.status(500).json({error:e.message});}
 });
-
+ 
 app.get('/enroll', function(req,res){
   var patientId=req.query.patient_id;
   if(!patientId) return res.status(400).json({error:'patient_id required'});
@@ -393,7 +385,7 @@ app.get('/enroll', function(req,res){
   var url='https://cloud.ouraring.com/oauth/authorize?response_type=code&client_id='+OURA_CLIENT_ID+'&redirect_uri='+encodeURIComponent(REDIRECT_URI)+'&scope='+encodeURIComponent(scope)+'&state='+encodeURIComponent(cleanId);
   res.json({authorization_url:url});
 });
-
+ 
 app.get('/callback', async function(req,res){
   var code=req.query.code,state=req.query.state;
   var patientId=state?state.toString().replace(/[^a-zA-Z0-9_-]/g,''):null;
@@ -419,7 +411,7 @@ app.get('/callback', async function(req,res){
     res.status(500).send('Connection failed. Please contact Dr. Fogelson\'s office.');
   }
 });
-
+ 
 app.get('/patients', async function(req,res){
   res.header('Access-Control-Allow-Origin','*');
   var password=req.query.password;
@@ -430,7 +422,7 @@ app.get('/patients', async function(req,res){
   });
   res.json({patients:result,last_updated:new Date().toISOString()});
 });
-
+ 
 app.post('/patients/:id', async function(req,res){
   var password=req.query.password;
   if(password!==CLINICIAN_PASSWORD) return res.status(401).json({error:'Unauthorized'});
@@ -441,7 +433,7 @@ app.post('/patients/:id', async function(req,res){
   await savePatients(patients);
   res.json({success:true,patient:patients[id]});
 });
-
+ 
 app.get('/patients/:id/enroll-link', function(req,res){
   var password=req.query.password;
   if(password!==CLINICIAN_PASSWORD) return res.status(401).json({error:'Unauthorized'});
@@ -450,5 +442,5 @@ app.get('/patients/:id/enroll-link', function(req,res){
   var url='https://cloud.ouraring.com/oauth/authorize?response_type=code&client_id='+OURA_CLIENT_ID+'&redirect_uri='+encodeURIComponent(REDIRECT_URI)+'&scope='+encodeURIComponent(scope)+'&state='+encodeURIComponent(cleanId);
   res.json({enrollment_url:url});
 });
-
+ 
 app.listen(PORT,function(){console.log('Bipolar Early Warning v3 running on port '+PORT);});
