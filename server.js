@@ -51,15 +51,8 @@ async function savePatients(data) {
 }
 
 // ── QUEUE SYSTEM ──────────────────────────────────────────────────────────────
-// Each patient refresh is an independent job stored in Redis
-// This allows future distribution across multiple workers
-// Queue key: 'refresh_queue' — list of patient IDs waiting to be refreshed
-// Job key: 'job:{patientId}' — individual job status and result
-// At scale: replace with proper queue (BullMQ, SQS, etc.) without changing API
-
 async function enqueueRefresh(patientIds) {
   try {
-    // Store refresh jobs as individual Redis keys with TTL
     for (var i = 0; i < patientIds.length; i++) {
       var jobKey = 'job:' + patientIds[i];
       await redis.set(jobKey, JSON.stringify({
@@ -67,9 +60,8 @@ async function enqueueRefresh(patientIds) {
         status: 'pending',
         enqueued_at: new Date().toISOString()
       }));
-      await redis.expire(jobKey, 3600); // expire after 1 hour
+      await redis.expire(jobKey, 3600);
     }
-    // Store queue as a list
     await redis.set('refresh_queue', JSON.stringify(patientIds));
     console.log('Enqueued ' + patientIds.length + ' patients for refresh');
   } catch(e) {
@@ -85,8 +77,6 @@ async function processRefreshQueue() {
 
   console.log('Processing refresh queue: ' + ids.length + ' patients');
 
-  // Process patients in batches of 10 to avoid rate limiting
-  // At scale: each batch becomes a separate worker job
   var batchSize = 10;
   for (var i = 0; i < ids.length; i += batchSize) {
     var batch = ids.slice(i, i + batchSize);
@@ -99,17 +89,14 @@ async function processRefreshQueue() {
         console.error('Error refreshing ' + id + ':', e.message);
       });
     });
-    // Process batch concurrently, then wait before next batch
     await Promise.all(batchPromises);
     if (i + batchSize < ids.length) {
-      // Small delay between batches to respect API rate limits
       await new Promise(function(resolve) { setTimeout(resolve, 1000); });
     }
   }
 
   await savePatients(patients);
 
-  // Update queue status
   var queueStatus = {
     last_run: new Date().toISOString(),
     patients_refreshed: results.length,
@@ -128,14 +115,12 @@ async function refreshPatient(id, patients) {
   }
 
   try {
-    // Update job status
     var jobKey = 'job:' + id;
     await redis.set(jobKey, JSON.stringify({ patientId: id, status: 'running', started_at: new Date().toISOString() }));
     await redis.expire(jobKey, 3600);
 
     await fetchAndUpdatePatient(id, p.access_token, patients);
 
-    // Mark job complete
     await redis.set(jobKey, JSON.stringify({
       patientId: id, status: 'complete',
       completed_at: new Date().toISOString(),
@@ -152,11 +137,10 @@ async function refreshPatient(id, patients) {
 }
 
 function getNextRunTime() {
-  // Refresh every 3 hours: 6am, 9am, 12pm, 3pm, 6pm, 9pm
   var now = new Date();
   var hours = [6, 9, 12, 15, 18, 21];
   var nextHour = hours.find(function(h) { return h > now.getHours(); });
-  if (!nextHour) nextHour = hours[0]; // wrap to next day
+  if (!nextHour) nextHour = hours[0];
   var next = new Date(now);
   next.setHours(nextHour, 0, 0, 0);
   if (nextHour <= now.getHours()) next.setDate(next.getDate() + 1);
@@ -260,17 +244,14 @@ function computeRisk(p){
 }
 
 // ── OURA DATA FETCH ───────────────────────────────────────────────────────────
-function parseOuraData(sleepData,activityData,days){
-  var sleepByDate={},activityByDate={};
+function parseOuraData(sleepData,activityData,readinessData,days){
+  var sleepByDate={},activityByDate={},tempByDate={};
   (sleepData||[]).forEach(function(s){
     var date=s.day||s.date;
     if(!date) return;
     var totalSleep=s.total_sleep_duration?s.total_sleep_duration/3600:null;
     var hrv=s.average_hrv||null;
     var hr=s.average_heart_rate||null;
-    // Non-wear detection: if sleep is very short AND both HRV and HR are null,
-    // the ring was not worn — treat as null rather than genuine short sleep.
-    // A genuinely manic patient sleeping 0 hours would still have HRV and HR recorded.
     var isNonWear=(totalSleep!==null&&totalSleep<0.5&&hrv===null&&hr===null);
     if(isNonWear){
       console.log('Non-wear night detected for '+date+': sleep='+totalSleep+'h, HRV=null, HR=null');
@@ -286,13 +267,17 @@ function parseOuraData(sleepData,activityData,days){
       nonWear:isNonWear
     };
   });
+  (readinessData||[]).forEach(function(r){
+    var date=r.day||r.date;
+    if(!date) return;
+    var t=(r.temperature_deviation!==undefined&&r.temperature_deviation!==null)?r.temperature_deviation:
+          ((r.temperature_trend_deviation!==undefined&&r.temperature_trend_deviation!==null)?r.temperature_trend_deviation:null);
+    tempByDate[date]=t;
+  });
   (activityData||[]).forEach(function(a){
     var date=a.day||a.date;
     if(!date) return;
     var steps=a.steps||null;
-    // Plausibility check: today's data may be an incomplete sync
-    // Values below 500 steps for an ambulatory patient are almost certainly partial syncs
-    // Historical days are fully processed and reliable — only apply to most recent day
     var today=new Date().toISOString().split('T')[0];
     if(date===today && steps!==null && steps>0 && steps<500){
       console.log('Implausible activity for today ('+steps+' steps) — likely incomplete sync, treating as null');
@@ -308,7 +293,7 @@ function parseOuraData(sleepData,activityData,days){
     hr:days.map(function(d){return sleepByDate[d]?sleepByDate[d].hr:null;}),
     activity:days.map(function(d){return activityByDate[d]?activityByDate[d].steps:null;}),
     nonWearDays:days.map(function(d){return sleepByDate[d]?sleepByDate[d].nonWear:false;}),
-    tempDev:(function(){for(var ti=days.length-1;ti>=0;ti--){var sd=sleepByDate[days[ti]];if(sd&&!sd.nonWear&&sd.temp!==null&&sd.temp!==undefined)return sd.temp;}return null;})(),
+    tempDev:(function(){for(var ti=days.length-1;ti>=0;ti--){var sd=sleepByDate[days[ti]];if(sd&&sd.nonWear)continue;var t=tempByDate[days[ti]];if(t!==null&&t!==undefined)return t;}return null;})(),
     respRate:last&&!last.nonWear?last.breath:14
   };
 }
@@ -321,10 +306,11 @@ async function fetchAndUpdatePatient(patientId,accessToken,patients){
   var results=await Promise.all([
     axios.get('https://api.ouraring.com/v2/usercollection/sleep?start_date='+start+'&end_date='+end,{headers:headers}),
     axios.get('https://api.ouraring.com/v2/usercollection/daily_activity?start_date='+start+'&end_date='+end,{headers:headers}),
+    axios.get('https://api.ouraring.com/v2/usercollection/daily_readiness?start_date='+start+'&end_date='+end,{headers:headers}),
   ]);
   var days=[];
   for(var i=6;i>=0;i--){var d=new Date();d.setDate(d.getDate()-i);days.push(d.toISOString().split('T')[0]);}
-  var parsed=parseOuraData(results[0].data.data,results[1].data.data,days);
+  var parsed=parseOuraData(results[0].data.data,results[1].data.data,results[2].data.data,days);
   var p=patients[patientId];
   Object.assign(p,parsed);
   p.nonWearDays=parsed.nonWearDays||[];
@@ -341,14 +327,10 @@ async function fetchAndUpdatePatient(patientId,accessToken,patients){
     p.maniaTrend=risk.maniaTrend;p.depTrend=risk.depTrend;
     p.status=Math.max(p.maniaRisk||0,p.depRisk||0)>=75?'high':Math.max(p.maniaRisk||0,p.depRisk||0)>=50?'warn':'ok';
 
-    // Append today's scores to 30-day history
-    // Stored as array of {date, mania, dep} objects, max 30 entries
     var today=new Date().toISOString().split('T')[0];
     if(!p.riskHistory) p.riskHistory=[];
-    // Remove any existing entry for today (in case of multiple refreshes)
     p.riskHistory=p.riskHistory.filter(function(h){return h.date!==today;});
     p.riskHistory.push({date:today, mania:p.maniaRisk, dep:p.depRisk});
-    // Keep only last 30 days
     p.riskHistory.sort(function(a,b){return a.date.localeCompare(b.date);});
     if(p.riskHistory.length>30) p.riskHistory=p.riskHistory.slice(-30);
   }
@@ -367,21 +349,17 @@ app.get('/health', function(req,res){
   res.json({status:'ok',service:'Bipolar Early Warning Backend',version:'3.0-queue'});
 });
 
-// Queue status endpoint
 app.get('/queue/status', async function(req,res){
   var password=req.query.password;
   if(password!==CLINICIAN_PASSWORD) return res.status(401).json({error:'Unauthorized'});
   try {
     var status=await redis.get('queue_status');
     if(!status) return res.json({message:'No refresh run yet'});
-    // Upstash SDK may auto-parse JSON — handle both string and object
     var parsed=typeof status==='string'?JSON.parse(status):status;
     res.json(parsed);
   } catch(e){res.json({error:e.message});}
 });
 
-// Scheduled refresh endpoint — called by Render cron every 3 hours
-// Protected by CRON_SECRET so only Render can trigger it
 app.post('/queue/run', async function(req,res){
   var secret=req.headers['x-cron-secret']||req.body.secret;
   if(secret!==CRON_SECRET) return res.status(401).json({error:'Unauthorized'});
@@ -398,7 +376,6 @@ app.post('/queue/run', async function(req,res){
   }
 });
 
-// Manual refresh — triggered by clinician from dashboard
 app.post('/refresh', async function(req,res){
   var password=req.body.password;
   if(password!==CLINICIAN_PASSWORD) return res.status(401).json({error:'Unauthorized'});
